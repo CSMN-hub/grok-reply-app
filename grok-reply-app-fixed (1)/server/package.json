@@ -2,9 +2,7 @@
   "name": "x-reply-server",
   "version": "1.0.0",
   "private": true,
-  "engines": {
-    "node": ">=20.0.0"
-  },
+  "engines": { "node": ">=20.0.0" },
   "type": "commonjs",
   "main": "src/index.js",
   "scripts": {
