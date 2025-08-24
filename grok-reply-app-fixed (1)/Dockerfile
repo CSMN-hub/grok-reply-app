@@ -4,18 +4,30 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
-# Web (frontend) deps + build
+# Copy & install web deps
 COPY web/package*.json ./web/
-RUN npm --prefix web ci
+RUN if [ -f web/package-lock.json ]; then \
+      npm --prefix web ci; \
+    else \
+      npm --prefix web install --no-audit --no-fund; \
+    fi
+
+# Build web
 COPY web ./web
 RUN npm --prefix web run build
 
-# Server (backend) deps
+# Copy & install server deps
 COPY server/package*.json ./server/
-RUN npm --prefix server ci
+RUN if [ -f server/package-lock.json ]; then \
+      npm --prefix server ci; \
+    else \
+      npm --prefix server install --no-audit --no-fund; \
+    fi
+
+# Copy server source
 COPY server ./server
 
-# Put the frontend build into server/public
+# Place built web into server/public
 RUN mkdir -p server/public && cp -r web/dist/* server/public/
 
 # ---------- run stage ----------
@@ -23,7 +35,7 @@ FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
-# copy server app (including node_modules & public)
+# copy server app (with node_modules & public)
 COPY --from=build /app/server /app/server
 
 EXPOSE 8080
