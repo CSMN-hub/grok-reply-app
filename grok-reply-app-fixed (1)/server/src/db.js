@@ -1,73 +1,154 @@
-const Database = require('better-sqlite3');
-const db = new Database('data.sqlite');
+// server/src/db.js
+// Postgres-backed storage (no better-sqlite3). Safe fallbacks for dev.
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS tokens (
-  user_id TEXT PRIMARY KEY,
-  username TEXT,
-  access_token TEXT,
-  refresh_token TEXT,
-  expires_at INTEGER,
-  scope TEXT
-);
-CREATE TABLE IF NOT EXISTS idempotency (
-  key TEXT PRIMARY KEY,
-  created_at INTEGER
-);
-CREATE TABLE IF NOT EXISTS personas (
-  username TEXT PRIMARY KEY,
-  summary_json TEXT,
-  updated_at INTEGER
-);
-`);
+const crypto = require('crypto');
+const { Pool } = require('pg');
 
-function saveToken(row) {
-  const stmt = db.prepare(`INSERT INTO tokens (user_id, username, access_token, refresh_token, expires_at, scope)
-  VALUES (@user_id,@username,@access_token,@refresh_token,@expires_at,@scope)
-  ON CONFLICT(user_id) DO UPDATE SET
-    username=excluded.username,
-    access_token=excluded.access_token,
-    refresh_token=excluded.refresh_token,
-    expires_at=excluded.expires_at,
-    scope=excluded.scope`);
-  stmt.run(row);
+const HAS_DB = !!process.env.DATABASE_URL;
+
+let pool = null;
+if (HAS_DB) {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }
+  });
+
+  // Create tables if missing
+  (async () => {
+    try {
+      await pool.query(`
+        create table if not exists tokens (
+          user_id      text primary key,
+          username     text not null,
+          access_token text not null,
+          refresh_token text,
+          expires_at   bigint,
+          scope        text
+        );
+        create table if not exists reply_ledger (
+          key         text primary key,
+          created_at  bigint not null
+        );
+        create table if not exists personas (
+          username     text primary key,
+          summary_json jsonb not null,
+          updated_at   bigint not null
+        );
+      `);
+      console.log('[db] tables ready');
+    } catch (e) {
+      console.error('[db:init] failed', e);
+    }
+  })();
 }
 
-function getToken(user_id) {
-  return db.prepare(`SELECT * FROM tokens WHERE user_id = ?`).get(user_id);
-}
+// In-memory caches so existing sync call-sites keep working.
+const tokenCache = new Map();   // user_id -> token row
+const personaCache = new Map(); // username -> { summary, updated_at }
+const memLedger = new Set();    // idempotency for dev/no-DB
 
+// ---------- Helpers ----------
 function idempotencyKey(tweetId, text) {
-  const crypto = require('crypto');
-  const hash = crypto.createHash('sha256').update(String(text || '').trim()).digest('hex');
+  const hash = crypto
+    .createHash('sha256')
+    .update(String(text || '').trim())
+    .digest('hex');
   return `reply:${tweetId}:${hash}`;
 }
 
-function putIdempotency(key) {
-  try {
-    db.prepare(`INSERT INTO idempotency (key, created_at) VALUES (?, ?)`).run(key, Date.now());
+// ---------- Idempotency ----------
+async function putIdempotency(key) {
+  if (!HAS_DB) {
+    if (memLedger.has(key)) return false;
+    memLedger.add(key);
     return true;
-  } catch {
+  }
+  try {
+    await pool.query(
+      'insert into reply_ledger(key, created_at) values ($1,$2)',
+      [key, Date.now()]
+    );
+    return true;
+  } catch (e) {
+    // duplicate primary key -> already used
     return false;
   }
 }
 
-function savePersona(username, summary_json) {
-  db.prepare(`INSERT INTO personas (username, summary_json, updated_at)
-    VALUES (?, ?, ?)
-    ON CONFLICT(username) DO UPDATE SET summary_json=excluded.summary_json, updated_at=excluded.updated_at`
-  ).run(username, JSON.stringify(summary_json), Date.now());
+// ---------- Tokens ----------
+function getToken(user_id) {
+  // Sync return to match existing call-sites.
+  // After login/saveToken, cache will have the fresh row.
+  return tokenCache.get(user_id) || null;
+}
+
+async function saveToken(row) {
+  // Row shape expected:
+  // { user_id, username, access_token, refresh_token?, expires_at?, scope? }
+  tokenCache.set(row.user_id, row);
+
+  if (!HAS_DB) return;
+
+  await pool.query(
+    `
+    insert into tokens (user_id, username, access_token, refresh_token, expires_at, scope)
+    values ($1,$2,$3,$4,$5,$6)
+    on conflict (user_id) do update set
+      username     = excluded.username,
+      access_token = excluded.access_token,
+      refresh_token= excluded.refresh_token,
+      expires_at   = excluded.expires_at,
+      scope        = excluded.scope
+    `,
+    [
+      row.user_id,
+      row.username,
+      row.access_token,
+      row.refresh_token || null,
+      row.expires_at || null,
+      row.scope || null
+    ]
+  );
+}
+
+// ---------- Personas ----------
+async function savePersona(username, summary_json) {
+  const now = Date.now();
+  personaCache.set(username, { summary: summary_json, updated_at: now });
+
+  if (!HAS_DB) return;
+
+  await pool.query(
+    `
+    insert into personas (username, summary_json, updated_at)
+    values ($1,$2,$3)
+    on conflict (username) do update set
+      summary_json = excluded.summary_json,
+      updated_at   = excluded.updated_at
+    `,
+    [username, JSON.stringify(summary_json), now]
+  );
 }
 
 function getPersona(username) {
-  const row = db.prepare(`SELECT summary_json FROM personas WHERE username = ?`).get(username);
-  return row ? JSON.parse(row.summary_json) : null;
+  const hit = personaCache.get(username);
+  return hit ? hit.summary : null;
 }
 
 function getPersonaMeta(username) {
-  const row = db.prepare(`SELECT summary_json, updated_at FROM personas WHERE username = ?`).get(username);
-  if (!row) return null;
-  return { summary: JSON.parse(row.summary_json), updated_at: row.updated_at };
+  const hit = personaCache.get(username);
+  return hit ? { summary: hit.summary, updated_at: hit.updated_at } : null;
 }
 
-module.exports = { db, saveToken, getToken, idempotencyKey, putIdempotency, savePersona, getPersona, getPersonaMeta };
+module.exports = {
+  // tokens
+  getToken,
+  saveToken,
+  // persona
+  savePersona,
+  getPersona,
+  getPersonaMeta,
+  // idempotency
+  idempotencyKey,
+  putIdempotency
+};
