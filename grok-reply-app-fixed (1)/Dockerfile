@@ -1,28 +1,30 @@
-# --- Build stage ---
+# syntax=docker/dockerfile:1
+
+# ---------- build stage ----------
 FROM node:20-alpine AS build
 WORKDIR /app
 
-# Web
+# Web (frontend) deps + build
 COPY web/package*.json ./web/
-RUN cd web && npm install
+RUN npm --prefix web ci
 COPY web ./web
-RUN cd web && npm run build
+RUN npm --prefix web run build
 
-# Server
+# Server (backend) deps
 COPY server/package*.json ./server/
-RUN cd server && npm install
+RUN npm --prefix server ci
 COPY server ./server
 
-# Move web dist into server/public
+# Put the frontend build into server/public
 RUN mkdir -p server/public && cp -r web/dist/* server/public/
 
-# --- Runtime stage ---
+# ---------- run stage ----------
 FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Copy server app & node_modules
-COPY --from=build /app/server /app
+# copy server app (including node_modules & public)
+COPY --from=build /app/server /app/server
 
 EXPOSE 8080
-CMD ["node", "src/index.js"]
+CMD ["node", "server/src/index.js"]
