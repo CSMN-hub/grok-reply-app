@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+web/dist/
+server/public/
+
+# Environment variables
+.env
+.env.local
+
+# Database
+data.sqlite
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS generated files
+.DS_Store
+Thumbs.db
