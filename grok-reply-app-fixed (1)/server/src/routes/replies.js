@@ -1,4 +1,5 @@
-const { Router } = require('express');
+const { updateFromHeaders, getStatus, getLockUntil, setLockUntil } = require('../utils/writeGate');
+ { Router } = require('express');
 const axios = require('axios');
 const { TwitterApi } = require('twitter-api-v2');
 const { CONFIG } = require('../config');
