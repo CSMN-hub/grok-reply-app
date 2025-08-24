@@ -1,0 +1,28 @@
+services:
+  - name: grok-reply-app
+    type: web
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: X_CLIENT_ID
+        sync: false
+      - key: X_CLIENT_SECRET
+        sync: false
+      - key: X_REDIRECT_URI
+        value: https://${{RAILWAY_PUBLIC_DOMAIN}}/auth/x/callback
+      - key: X_SCOPES
+        value: tweet.read users.read tweet.write offline.access
+      - key: XAI_API_KEY
+        sync: false
+      - key: XAI_BASE_URL
+        value: https://api.x.ai/v1
+      - key: XAI_MODEL
+        value: grok-4-0709
+      - key: XAI_TOKEN_BUDGET_DAILY
+        value: 1000000
+      - key: WEB_ORIGIN
+        value: https://${{RAILWAY_PUBLIC_DOMAIN}}
+    healthcheckPath: /auth/me
+    autoDeploy: true
