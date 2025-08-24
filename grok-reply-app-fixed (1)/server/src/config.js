@@ -1,4 +1,6 @@
-require('dotenv').config();
+// Make dotenv optional in production
+try { require('dotenv').config(); } catch (_) {}
+
 
 const CONFIG = {
   PORT: parseInt(process.env.PORT || '8080', 10),
