@@ -51,13 +51,12 @@ async function getClient(req) {
 
 // ---------- routes ----------
 
-// Resolve @username -> user object (read-lock aware)
+// Resolve @username -> user object (read-lock aware + cache)
 router.get('/resolve', async (req, res, next) => {
   try {
     const username = String(req.query.username || '').replace(/^@/, '');
     if (!username) return res.status(400).json({ ok: false, error: 'username required' });
 
-    // If reads are locked, short-circuit
     if (Date.now() < getReadLockUntil()) {
       return res.status(429).json({ ok: false, rate_limited: true, scope: 'read', reset_ms: getReadLockUntil() });
     }
@@ -81,11 +80,14 @@ router.get('/resolve', async (req, res, next) => {
       setReadLockUntil(resetMs + 1000);
       return res.status(429).json({ ok: false, rate_limited: true, scope: 'read', reset_ms: resetMs + 1000 });
     }
+    if (e?.message === 'NotAuthenticated') {
+      return res.status(401).json({ ok:false, error:'NotAuthenticated' });
+    }
     next(e);
   }
 });
 
-// Get latest tweet for @username (cache + read-lock aware)
+// Get latest tweet for @username with cascade (orig → +replies → anything)
 router.get('/latest', async (req, res, next) => {
   try {
     const username = String(req.query.username || '').replace(/^@/, '');
@@ -101,16 +103,28 @@ router.get('/latest', async (req, res, next) => {
 
     const client = await getClient(req);
 
-    const run = async () => {
-      const user = await client.v2.userByUsername(username);
-      // exclude both retweets & replies (you had only retweets)
-      const tl = await client.v2.userTimeline(user.data.id, { max_results: 5, exclude: ['retweets', 'replies'] });
-      const latest = tl.tweets?.[0] || null;
-      cache.set(key, latest);
+    const fetchLatest = async (userId) => {
+      const attempt = async (opts) => {
+        const tl = await client.v2.userTimeline(userId, opts);
+        return tl.tweets?.[0] || (Array.isArray(tl.data) ? tl.data[0] : null) || null;
+      };
+
+      // 1) Only originals (no RTs, no replies)
+      let latest = await attempt({ max_results: 5, exclude: ['retweets', 'replies'] });
+      if (latest) return latest;
+
+      // 2) Originals + replies (no RTs)
+      latest = await attempt({ max_results: 5, exclude: ['retweets'] });
+      if (latest) return latest;
+
+      // 3) Anything (last resort)
+      latest = await attempt({ max_results: 5 });
       return latest;
     };
 
-    const latest = await readLimiter.schedule(() => once(key, () => withBreaker(run)()));
+    const user = await readLimiter.schedule(() => client.v2.userByUsername(username));
+    const latest = await readLimiter.schedule(() => once(key, () => withBreaker(() => fetchLatest(user.data.id))()));
+    cache.set(key, latest);
     res.json({ ok: true, latest });
   } catch (e) {
     const resetMs = parseReset(e?.response?.headers);
@@ -118,11 +132,14 @@ router.get('/latest', async (req, res, next) => {
       setReadLockUntil(resetMs + 1000);
       return res.status(429).json({ ok: false, rate_limited: true, scope: 'read', reset_ms: resetMs + 1000 });
     }
+    if (e?.message === 'NotAuthenticated') {
+      return res.status(401).json({ ok:false, error:'NotAuthenticated' });
+    }
     next(e);
   }
 });
 
-// Search #tag (cache + read-lock aware). We keep just the first result to minimize calls.
+// Search #tag (cache + read-lock aware). Return 1 safe result to minimize reads.
 router.get('/search', async (req, res, next) => {
   try {
     const q = String(req.query.q || '');
@@ -139,7 +156,10 @@ router.get('/search', async (req, res, next) => {
     const client = await getClient(req);
     const run = async () => {
       const r = await client.v2.search(q, { max_results: 10 });
-      const list = Array.isArray(r.tweets) ? r.tweets.slice(0, 1) : []; // only first to be safe
+      // twitter-api-v2 may expose results under .tweets or .data depending on version
+      const list = Array.isArray(r.tweets) ? r.tweets.slice(0, 1)
+                 : Array.isArray(r.data)   ? r.data.slice(0, 1)
+                 : [];
       cache.set(key, list);
       return list;
     };
@@ -151,6 +171,9 @@ router.get('/search', async (req, res, next) => {
     if ((e?.response?.status === 429) && resetMs) {
       setReadLockUntil(resetMs + 1000);
       return res.status(429).json({ ok: false, rate_limited: true, scope: 'read', reset_ms: resetMs + 1000 });
+    }
+    if (e?.message === 'NotAuthenticated') {
+      return res.status(401).json({ ok:false, error:'NotAuthenticated' });
     }
     next(e);
   }
