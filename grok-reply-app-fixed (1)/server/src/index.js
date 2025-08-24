@@ -45,6 +45,31 @@ app.use('/api/twitter', twitter);
 app.use('/api/replies', replies);
 app.use('/api/persona', persona);
 
+// --- DEBUG ENDPOINTS: read/write limits status ---
+try {
+  const { getReadLockUntil } = require('./utils/gate');
+  const { getStatus } = require('./utils/writeGate');
+
+  app.get('/debug/reads', (_req, res) => {
+    res.json({ lock_until_ms: getReadLockUntil ? getReadLockUntil() : 0, now: Date.now() });
+  });
+
+  app.get('/debug/writes', (_req, res) => {
+    const s = getStatus ? getStatus() : {};
+    const locked = s.locked_until_ms && Date.now() < s.locked_until_ms;
+    res.json({
+      locked,
+      remaining: s.remaining ?? null,
+      reset_epoch: s.reset_epoch ?? null,
+      reset_iso: s.reset_epoch ? new Date(s.reset_epoch * 1000).toISOString() : null,
+      locked_until_ms: s.locked_until_ms ?? 0,
+      now: Date.now()
+    });
+  });
+} catch (_) {
+  // If utils not found, skip
+}
+
 // Static SPA
 const staticDir = path.join(process.cwd(), 'public');
 app.use(express.static(staticDir));

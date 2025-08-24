@@ -1,4 +1,6 @@
 import React from 'react'
+import RateBadge from './components/RateBadge'
+import { getWriteStatus } from './api'
 
 function api(path, opts={}) {
   return fetch(path, { credentials: 'include', ...opts }).then(r => r.json())
@@ -14,8 +16,19 @@ export default function App() {
   const [temp, setTemp] = React.useState(0.7)
   const [options, setOptions] = React.useState([])
   const [loading, setLoading] = React.useState(false)
+  const [writeStatus, setWriteStatus] = React.useState(null)
 
   React.useEffect(() => { api('/auth/me').then(setAuth) }, [])
+
+  React.useEffect(() => {
+    let stop = false;
+    async function tick() {
+      try { const s = await getWriteStatus(); if (!stop) setWriteStatus(s); } catch {}
+    }
+    tick();
+    const id = setInterval(tick, 30000);
+    return () => { stop = true; clearInterval(id); };
+  }, []);
 
   async function load(list) {
     const out = {}
@@ -92,6 +105,10 @@ export default function App() {
         <button onClick={async () => { await api('/auth/logout', { method: 'POST' }); location.reload() }}>Logout</button>
       </div>
 
+      {writeStatus && (
+        <RateBadge resetIso={writeStatus.reset_iso} lockedUntilMs={writeStatus.locked_until_ms} />
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr 1fr', gap: 16 }}>
         <div>
           <h2>Import</h2>
@@ -146,7 +163,14 @@ export default function App() {
                 <div style={{ whiteSpace: 'pre-wrap' }}>{opt}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
                   <button onClick={() => navigator.clipboard.writeText(opt)}>Copy</button>
-                  <button onClick={() => doPost(opt)}>Post Reply</button>
+                  <button
+                    disabled={!!(writeStatus && writeStatus.locked_until_ms && Date.now() < writeStatus.locked_until_ms)}
+                    title={writeStatus && writeStatus.locked_until_ms && Date.now() < writeStatus.locked_until_ms
+                      ? 'Posting is temporarily blocked by X.' : 'Post Reply'}
+                    onClick={() => doPost(opt)}
+                  >
+                    Post Reply
+                  </button>
                 </div>
               </div>
             ))}

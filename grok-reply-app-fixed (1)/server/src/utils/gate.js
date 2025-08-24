@@ -23,4 +23,10 @@ const writeLimiter = new Bottleneck({
   maxConcurrent: 1,
 });
 
-module.exports = { readLimiter, writeLimiter };
+// Read rate limit tracking
+let readLockedUntilMs = 0; // epoch ms
+
+function getReadLockUntil() { return readLockedUntilMs; }
+function setReadLockUntil(ms) { if (ms) readLockedUntilMs = Math.max(readLockedUntilMs, ms); }
+
+module.exports = { readLimiter, writeLimiter, getReadLockUntil, setReadLockUntil };
